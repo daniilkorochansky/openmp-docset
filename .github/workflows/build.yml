@@ -1,0 +1,96 @@
+name: Build open.mp Docset
+
+on:
+  schedule:
+    - cron: '0 */6 * * *' # Проверка каждые 6 часов
+  workflow_dispatch:       # Возможность запустить вручную в любой момент
+    inputs:
+      force_build:
+        description: 'Принудительная пересборка (игнорировать проверку коммита)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write # Права на создание и обновление релизов
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check upstream changes in frontend/docs
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Получаем SHA последнего коммита именно в папке frontend/docs
+          LATEST_SHA=$(curl -s "https://github.com" | jq -r '.[0].sha')
+          echo "Upstream SHA: $LATEST_SHA"
+          echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
+
+          # Пытаемся скачать version.json из текущего релиза latest
+          CURRENT_SHA=""
+          if curl -sfL "https://github.com{{ github.repository }}/releases/download/latest/version.json" -o old_version.json; then
+            CURRENT_SHA=$(jq -r '.commit_sha // ""' old_version.json)
+          fi
+          echo "Current release SHA: $CURRENT_SHA"
+
+          # Решаем, нужно ли запускать сборку
+          if [ "${{ github.event.inputs.force_build }}" == "true" ]; then
+            echo "Force build requested."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          elif [ "$LATEST_SHA" != "$CURRENT_SHA" ] && [ -n "$LATEST_SHA" ] && [ "$LATEST_SHA" != "null" ]; then
+            echo "New documentation changes detected!"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "Documentation is up to date. Skipping build."
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Sparse checkout open.mp docs
+        if: steps.check.outputs.should_build == 'true'
+        run: |
+          git clone --filter=blob:none --no-checkout --depth 1 https://github.com upstream
+          cd upstream
+          git sparse-checkout init --cone
+          git sparse-checkout set frontend/docs
+          git checkout master
+
+      - name: Build Docset and metadata
+        if: steps.check.outputs.should_build == 'true'
+        run: |
+          pip install markdown beautifulsoup4 pygments
+          python build_docset.py upstream/frontend/docs
+          
+          # Упаковываем в .tgz (формат для Zeal/Dash и вашей wxPython-программы)
+          tar -czf openmp.docset.tgz openmp.docset
+          
+          # Генерируем файл версии для проверки обновлений в клиенте и в следующем запуске Action
+          BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          cat <<EOF > version.json
+          {
+            "commit_sha": "${{ steps.check.outputs.latest_sha }}",
+            "updated_at": "$BUILD_DATE",
+            "download_url": "https://github.com{{ github.repository }}/releases/download/latest/openmp.docset.tgz"
+          }
+          EOF
+
+      - name: Rolling Update GitHub Release
+        if: steps.check.outputs.should_build == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "open.mp Documentation (Latest)"
+          body: |
+            Автоматическая сборка документации **open.mp** в формате Docset (для Zeal, Dash и встроенных просмотрщиков).
+            
+            * **Исходный коммит:** `openmultiplayer/web@${{ steps.check.outputs.latest_sha }}`
+            * **Дата обновления:** `${{ github.event.head_commit.timestamp || 'Scheduled build' }}`
+          prerelease: false
+          make_latest: true
+          files: |
+            openmp.docset.tgz
+            version.json
