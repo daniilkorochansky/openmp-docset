@@ -26,15 +26,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Получаем SHA последнего коммита именно в папке frontend/docs
-          LATEST_SHA=$(curl -s "https://github.com" | jq -r '.[0].sha')
+          # Добавляем обязательный User-Agent и -f (fail on HTTP error)
+          RESPONSE=$(curl -sfL -H "User-Agent: GitHub-Actions" -H "Accept: application/vnd.github+json" "https://github.com")
+          LATEST_SHA=$(echo "$RESPONSE" | jq -r '.[0].sha // empty')
+          
           echo "Upstream SHA: $LATEST_SHA"
           echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
 
           # Пытаемся скачать version.json из текущего релиза latest
           CURRENT_SHA=""
           if curl -sfL "https://github.com{{ github.repository }}/releases/download/latest/version.json" -o old_version.json; then
-            CURRENT_SHA=$(jq -r '.commit_sha // ""' old_version.json)
+            CURRENT_SHA=$(jq -r '.commit_sha // empty' old_version.json)
           fi
           echo "Current release SHA: $CURRENT_SHA"
 
@@ -42,13 +44,14 @@ jobs:
           if [ "${{ github.event.inputs.force_build }}" == "true" ]; then
             echo "Force build requested."
             echo "should_build=true" >> $GITHUB_OUTPUT
-          elif [ "$LATEST_SHA" != "$CURRENT_SHA" ] && [ -n "$LATEST_SHA" ] && [ "$LATEST_SHA" != "null" ]; then
+          elif [ -n "$LATEST_SHA" ] && [ "$LATEST_SHA" != "$CURRENT_SHA" ]; then
             echo "New documentation changes detected!"
             echo "should_build=true" >> $GITHUB_OUTPUT
           else
             echo "Documentation is up to date. Skipping build."
             echo "should_build=false" >> $GITHUB_OUTPUT
           fi
+
 
       - name: Sparse checkout open.mp docs
         if: steps.check.outputs.should_build == 'true'
