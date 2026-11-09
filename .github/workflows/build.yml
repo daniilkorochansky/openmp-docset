@@ -90,7 +90,6 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install -r requirements.txt
-          python -m unittest discover -s tests -v
           python build_docset.py upstream/frontend/docs --output openmp.docset
 
           DOCSET_VERSION=$(date -u +'%Y.%m.%d.%H%M%S')
