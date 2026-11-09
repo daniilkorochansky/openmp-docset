@@ -3,9 +3,9 @@
 Automatically compiled offline documentation for **openmultiplayer** in **Docset** format.
 
 ## Features
-* **Full autonomy:** The entire documentation database and HTML pages are stored locally and work without the internet.
+* **Full Autonomy:** The entire documentation database and HTML pages are stored locally and work without the internet.
 * **Rolling Updates:** Updates are checked in the official repository every 12 hours. If the documentation has been updated, the Docset is automatically updated and the rolling update of the `latest` release is released.
-* **Adaptive design:** HTML pages are optimized for WebView and support both light and dark system themes.
+* **Adaptive Design:** HTML pages are optimized for WebView and support both light and dark system themes.
 
 ## Data source
 The source texts of references, functions, and articles are taken directly from the official repository of the openmultiplayer project: **[openmultiplayer/web](https://github.com/openmultiplayer/web)**
