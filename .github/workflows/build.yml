@@ -1,12 +1,19 @@
-name: Build & Rolling Update open.mp Docset
+name: Build & publish open.mp Docset
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'build_docset.py'
+      - 'requirements.txt'
+      - '.github/workflows/build.yml'
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       force_build:
-        description: 'Принудительная пересборка (игнорировать проверку коммита)'
+        description: 'Force a new build, even when upstream docs have not changed'
         required: false
         default: false
         type: boolean
@@ -21,77 +28,135 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check upstream changes in frontend/docs
+      - name: Check upstream documentation changes
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          set -euo pipefail
           API_URL="https://api.github.com/repos/openmultiplayer/web/commits?path=frontend/docs&per_page=1"
-          RESPONSE=$(curl -sL -H "User-Agent: GitHub-Actions" -H "Accept: application/vnd.github+json" "$API_URL")
-          LATEST_SHA=$(echo "$RESPONSE" | jq -r '.[0].sha // empty')
-          
-          echo "Upstream SHA: $LATEST_SHA"
-          echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
+          RESPONSE=$(curl --fail --silent --show-error --location \
+            -H "User-Agent: GitHub-Actions" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "$API_URL")
+          LATEST_SHA=$(jq -r '.[0].sha // empty' <<< "$RESPONSE")
+          if [[ -z "$LATEST_SHA" ]]; then
+            echo "GitHub API did not return the latest documentation commit." >&2
+            exit 1
+          fi
+          BUILD_REVISION=$(cat build_docset.py requirements.txt .github/workflows/build.yml tests/*.py | sha256sum | cut -d' ' -f1)
+          echo "Build revision: $BUILD_REVISION"
+          echo "build_revision=$BUILD_REVISION" >> "$GITHUB_OUTPUT"
+          echo "Upstream docs SHA: $LATEST_SHA"
+          echo "latest_sha=$LATEST_SHA" >> "$GITHUB_OUTPUT"
 
           CURRENT_SHA=""
-          REL_URL="https://github.com/${{ github.repository }}/releases/download/latest/version.json"
-          if curl -sfL "$REL_URL" -o old_version.json; then
+          CURRENT_BUILD_REVISION=""
+          RELEASE_VERSION_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/version.json"
+          if curl --fail --silent --show-error --location "$RELEASE_VERSION_URL" -o old_version.json; then
             CURRENT_SHA=$(jq -r '.commit_sha // empty' old_version.json)
+            CURRENT_BUILD_REVISION=$(jq -r '.build_revision // empty' old_version.json)
           fi
-          echo "Current release SHA: $CURRENT_SHA"
+          echo "Published docs SHA: ${CURRENT_SHA:-none}"
+          echo "Published build revision: ${CURRENT_BUILD_REVISION:-none}"
 
-          if [ "${{ github.event.inputs.force_build }}" == "true" ]; then
+          if [[ "${{ inputs.force_build }}" == "true" ]]; then
             echo "Force build requested."
-            echo "should_build=true" >> $GITHUB_OUTPUT
-          elif [ -n "$LATEST_SHA" ] && [ "$LATEST_SHA" != "$CURRENT_SHA" ]; then
-            echo "New documentation changes detected (or initial build)."
-            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$LATEST_SHA" != "$CURRENT_SHA" || "$BUILD_REVISION" != "$CURRENT_BUILD_REVISION" ]]; then
+            echo "Upstream documentation or the docset builder changed (or this is the first build)."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
           else
             echo "Documentation is up to date. Skipping build."
-            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Sparse checkout open.mp docs
+      - name: Checkout upstream documentation
         if: steps.check.outputs.should_build == 'true'
         run: |
-          REPO_URL="https://github.com/openmultiplayer/web.git"
-          git clone --filter=blob:none --no-checkout --depth 1 "$REPO_URL" upstream
-          cd upstream
-          git sparse-checkout init --cone
-          git sparse-checkout set frontend/docs
-          git checkout master
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/openmultiplayer/web.git upstream
+          git -C upstream sparse-checkout set frontend/docs
 
-      - name: Build Docset and metadata
+      - name: Build docset and feed metadata
         if: steps.check.outputs.should_build == 'true'
+        id: build
+        shell: bash
+        env:
+          UPSTREAM_SHA: ${{ steps.check.outputs.latest_sha }}
+          BUILD_REVISION: ${{ steps.check.outputs.build_revision }}
         run: |
-          pip install markdown beautifulsoup4 pygments
-          python build_docset.py upstream/frontend/docs
-          
-          tar -czf openmp.docset.tgz openmp.docset
-          
-          python -c "
-          import json, datetime
+          set -euo pipefail
+          python -m pip install -r requirements.txt
+          python -m unittest discover -s tests -v
+          python build_docset.py upstream/frontend/docs --output openmp.docset
+
+          DOCSET_VERSION=$(date -u +'%Y.%m.%d.%H%M%S')
+          DOCSET_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/openmp.docset.tgz"
+          FEED_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/open.mp.xml"
+          export DOCSET_VERSION DOCSET_URL FEED_URL
+
+          tar --exclude='.DS_Store' -czf openmp.docset.tgz openmp.docset
+          cat > open.mp.xml <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <entry>
+              <name>open.mp</name>
+              <version>${DOCSET_VERSION}</version>
+              <url>${DOCSET_URL}</url>
+          </entry>
+          EOF
+
+          python - <<'PY'
+          import datetime
+          import json
+          import os
+          from pathlib import Path
+
           data = {
-              'commit_sha': '${{ steps.check.outputs.latest_sha }}',
-              'updated_at': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-              'download_url': 'https://github.com/${{ github.repository }}/releases/download/latest/openmp.docset.tgz'
+              "version": os.environ["DOCSET_VERSION"],
+              "commit_sha": os.environ["UPSTREAM_SHA"],
+              "build_revision": os.environ["BUILD_REVISION"],
+              "updated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "download_url": os.environ["DOCSET_URL"],
+              "feed_url": os.environ["FEED_URL"],
           }
-          with open('version.json', 'w', encoding='utf-8') as f:
-              json.dump(data, f, indent=2)
-          "
+          Path("version.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+          PY
+          echo "version=$DOCSET_VERSION" >> "$GITHUB_OUTPUT"
+          echo "feed_url=$FEED_URL" >> "$GITHUB_OUTPUT"
 
-      - name: Rolling Update GitHub Release
+      - name: Publish rolling GitHub release
         if: steps.check.outputs.should_build == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: "open.mp Documentation (Latest)"
           body: |
-            Автоматическая сборка документации **open.mp** в формате Docset (для Zeal, Dash и встроенных просмотрщиков).
-            
-            * **Исходный коммит:** `openmultiplayer/web@${{ steps.check.outputs.latest_sha }}`
+            Automatically built Dash/Zeal docset for open.mp and SA-MP documentation.
+
+            - **Docset version:** `${{ steps.build.outputs.version }}`
+            - **Source commit:** `openmultiplayer/web@${{ steps.check.outputs.latest_sha }}`
+            - **Zeal feed:** `${{ steps.build.outputs.feed_url }}`
           prerelease: false
           make_latest: true
+          overwrite_files: true
           files: |
             openmp.docset.tgz
+            open.mp.xml
             version.json
+
+      - name: Update repository feed file
+        if: steps.check.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- open.mp.xml; then
+            git add open.mp.xml
+            git commit -m "chore: update open.mp docset feed [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}" || \
+              echo "::warning::Could not push the repository feed file; use the XML feed asset attached to the latest release."
+          fi
