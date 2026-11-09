@@ -9,7 +9,7 @@ on:
       - 'requirements.txt'
       - '.github/workflows/build.yml'
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */12 * * *'
   workflow_dispatch:
     inputs:
       force_build:
@@ -131,7 +131,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: "open.mp Documentation (Latest)"
+          name: "open.mp Documentation"
           body: |
             Automatically built Dash/Zeal docset for open.mp and SA-MP documentation.
 
