@@ -46,7 +46,7 @@ jobs:
             echo "GitHub API did not return the latest documentation commit." >&2
             exit 1
           fi
-          BUILD_REVISION=$(cat build_docset.py requirements.txt .github/workflows/build.yml tests/*.py | sha256sum | cut -d' ' -f1)
+          BUILD_REVISION=$(cat build_docset.py requirements.txt | sha256sum | cut -d' ' -f1)
           echo "Build revision: $BUILD_REVISION"
           echo "build_revision=$BUILD_REVISION" >> "$GITHUB_OUTPUT"
           echo "Upstream docs SHA: $LATEST_SHA"
