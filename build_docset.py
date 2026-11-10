@@ -119,7 +119,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
 <h1>{title}</h1>
 {content}
-<footer class="docset-footer">open.mp documentation · Offline docset</footer>
+<footer class="docset-footer">open.mp documentation</footer>
 </body>
 </html>
 """
