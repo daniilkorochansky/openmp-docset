@@ -1,6 +1,6 @@
 # openmp-docset
 
-Automatically compiled offline documentation for **openmultiplayer** in **Docset** format.
+Automatically compiled offline documentation for **[openmultiplayer](https://github.com/openmultiplayer/open.mp)** in **docset** format.
 
 ## Features
 * **Full Autonomy:** The entire documentation database and HTML pages are stored locally and work without the internet.
